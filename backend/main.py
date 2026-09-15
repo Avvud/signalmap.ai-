@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -16,6 +17,7 @@ import aiosqlite
 from backend.config import settings
 from backend.database import init_db, get_db
 from backend.models import ResearchInput, RunStatusResponse, PipelineStatus
+from backend.worker import research_pipeline
 
 # --- Structured Logging Setup ---
 class JSONLogFormatter(logging.Formatter):
@@ -113,7 +115,8 @@ async def create_research(request: Request, body: ResearchInput, db: aiosqlite.C
         await redis_pool.enqueue_job("research_pipeline", run_id)
         logger.info(f"Enqueued job for run {run_id} in Arq/Redis")
     else:
-        logger.warning(f"Redis pool unavailable. Job {run_id} created in SQLite DB but not enqueued.")
+        logger.warning(f"Redis pool unavailable. Launching research pipeline as asyncio background task for run {run_id}.")
+        asyncio.create_task(research_pipeline(None, run_id))
 
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         row = await cursor.fetchone()

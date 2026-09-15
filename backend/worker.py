@@ -14,11 +14,11 @@ from backend.fetchers.github import search_github
 from backend.llm import run_stage_a, run_stage_b, validate_evidence_ids
 
 
-# Mode → which tools to run
+# Mode → which tools to run (Reddit paused until API key is configured)
 MODE_TOOL_MAP = {
-    ResearchMode.FULL: ["website", "youtube", "reddit", "github"],
+    ResearchMode.FULL: ["website", "youtube", "github"],
     ResearchMode.CONTENT: ["website", "youtube"],
-    ResearchMode.DEVELOPER: ["reddit", "github"],
+    ResearchMode.DEVELOPER: ["github"],
     ResearchMode.MESSAGING: ["website"],
 }
 
