@@ -5,6 +5,7 @@ import uuid
 import aiosqlite
 from arq.connections import RedisSettings
 from backend.config import settings
+from backend.database import init_db
 from backend.models import Evidence, ResearchMode
 from backend.normalizer import normalize_evidence
 from backend.fetchers.website import fetch_website_evidence, inspect_website
@@ -130,6 +131,9 @@ async def research_pipeline(ctx, run_id: str):
     db_path = settings.get_database_path
 
     try:
+        # Guarantee database schema initialized on serverless environments
+        await init_db()
+
         # 1. Load run info
         run_info = await _get_run_info(db_path, run_id)
         company_name = run_info["company_name"]
