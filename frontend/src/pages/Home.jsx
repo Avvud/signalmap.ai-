@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createResearchRun } from '../services/api';
+import { createResearchRun, executeResearchRun } from '../services/api';
 import { Sparkles, ArrowRight, ShieldCheck, Database, Cpu, Globe } from 'lucide-react';
 
 export default function Home() {
@@ -20,6 +20,9 @@ export default function Home() {
 
     try {
       const data = await createResearchRun(companyName.trim(), mode, websiteUrl.trim() || null);
+      // Fire-and-forget: this holds a long request open server-side while the
+      // Status page polls for progress.
+      executeResearchRun(data.run_id);
       navigate(`/status/${data.run_id}`);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to trigger research run. Make sure backend is running.');

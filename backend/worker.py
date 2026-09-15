@@ -2,10 +2,9 @@ import asyncio
 import json
 import time
 import uuid
-import aiosqlite
 from arq.connections import RedisSettings
 from backend.config import settings
-from backend.database import init_db
+from backend import store
 from backend.models import Evidence, ResearchMode
 from backend.normalizer import normalize_evidence
 from backend.fetchers.website import fetch_website_evidence, inspect_website
@@ -25,53 +24,19 @@ MODE_TOOL_MAP = {
 
 
 async def _update_status(db_path: str, run_id: str, status: str, error_message: str = None):
-    """Helper to update run status in SQLite."""
-    async with aiosqlite.connect(db_path) as db:
-        if error_message:
-            await db.execute(
-                "UPDATE research_runs SET status = ?, error_message = ?, updated_at = datetime('now') WHERE id = ?",
-                (status, error_message, run_id)
-            )
-        else:
-            await db.execute(
-                "UPDATE research_runs SET status = ?, updated_at = datetime('now') WHERE id = ?",
-                (status, run_id)
-            )
-        await db.commit()
+    """Delegates to the durable store. Never raises."""
+    await store.update_status(run_id, status, error_message)
 
 
 async def _get_run_info(db_path: str, run_id: str) -> dict:
-    """Fetch run details from SQLite."""
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                raise ValueError(f"Run {run_id} not found in database")
-            return dict(row)
+    run = await store.get_run(run_id)
+    if not run:
+        raise ValueError(f"Run {run_id} not found in store")
+    return run
 
 
-async def _persist_evidence(db_path: str, evidence_list: list[Evidence]):
-    """Batch insert evidence items into SQLite."""
-    async with aiosqlite.connect(db_path) as db:
-        for item in evidence_list:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO evidence (id, run_id, source, source_url, title, raw_content, normalized_content, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.evidence_id,
-                    item.run_id,
-                    item.source.value,
-                    item.source_url,
-                    item.title,
-                    item.raw_content,
-                    item.normalized_content,
-                    json.dumps(item.metadata),
-                )
-            )
-        await db.commit()
+async def _persist_evidence(run_id: str, evidence_list: list[Evidence]):
+    await store.save_evidence(run_id, evidence_list)
 
 
 async def _persist_findings_and_report(
@@ -82,45 +47,7 @@ async def _persist_findings_and_report(
     stage_b_result: dict,
     source_breakdown: list[dict],
 ):
-    """Save findings and report to SQLite."""
-    async with aiosqlite.connect(db_path) as db:
-        # Insert findings
-        for finding in all_findings:
-            finding_id = str(uuid.uuid4())
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO findings (id, run_id, claim, claim_type, evidence_ids_json, confidence, source_category)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    finding_id,
-                    run_id,
-                    finding.get("claim", ""),
-                    finding.get("claim_type", "observation"),
-                    json.dumps(finding.get("evidence_ids", [])),
-                    finding.get("confidence", 0.5),
-                    finding.get("source_category", "general"),
-                )
-            )
-
-        # Insert report
-        report_id = str(uuid.uuid4())
-        await db.execute(
-            """
-            INSERT OR REPLACE INTO reports (id, run_id, executive_summary, source_breakdown_json, cross_platform_findings, opportunity, limitations_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                report_id,
-                run_id,
-                stage_b_result.get("executive_summary", "Report generation incomplete."),
-                json.dumps(source_breakdown),
-                json.dumps(stage_b_result.get("cross_platform_findings", [])),
-                stage_b_result.get("opportunity", "No opportunity identified."),
-                json.dumps(stage_b_result.get("limitations", [])),
-            )
-        )
-        await db.commit()
+    await store.save_report(run_id, company_name, all_findings, stage_b_result, source_breakdown)
 
 
 async def research_pipeline(ctx, run_id: str):
@@ -131,8 +58,7 @@ async def research_pipeline(ctx, run_id: str):
     db_path = settings.get_database_path
 
     try:
-        # Guarantee database schema initialized on serverless environments
-        await init_db()
+        await store.init()
 
         # 1. Load run info
         run_info = await _get_run_info(db_path, run_id)
@@ -195,7 +121,7 @@ async def research_pipeline(ctx, run_id: str):
         await _update_status(db_path, run_id, "normalizing")
         normalized = normalize_evidence(all_evidence)
         final_evidence = [item.model_copy(update={"run_id": run_id}) for item in normalized]
-        await _persist_evidence(db_path, final_evidence)
+        await _persist_evidence(run_id, final_evidence)
         print(f"[Worker] Normalized: {len(final_evidence)} items stored")
 
         # 7. Group evidence by source for Stage A

@@ -22,15 +22,15 @@ class Settings(BaseSettings):
 
     @property
     def get_database_path(self) -> str:
-        """Returns /tmp/signalmap.db on Linux/Vercel/Lambda serverless environments, otherwise DATABASE_PATH."""
-        if os.name != "nt" or os.getenv("VERCEL") or os.getenv("VERCEL_ENV") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        """Returns /tmp/signalmap.db in Vercel / Lambda environment, otherwise DATABASE_PATH."""
+        if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
             return "/tmp/signalmap.db"
         return self.DATABASE_PATH
 
     @property
     def is_vercel(self) -> bool:
-        """Returns True if running on Vercel/Linux serverless environment."""
-        return os.name != "nt" or bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+        """Returns True if running inside Vercel serverless functions."""
+        return bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 
     model_config = SettingsConfigDict(
         env_file=".env",
