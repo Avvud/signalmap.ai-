@@ -7,7 +7,7 @@ from arq.connections import RedisSettings
 from backend.config import settings
 from backend.models import Evidence, ResearchMode
 from backend.normalizer import normalize_evidence
-from backend.fetchers.website import inspect_website
+from backend.fetchers.website import fetch_website_evidence, inspect_website
 from backend.fetchers.youtube import search_youtube
 from backend.fetchers.reddit import search_reddit
 from backend.fetchers.github import search_github
@@ -144,10 +144,8 @@ async def research_pipeline(ctx, run_id: str):
         # 3. Build async tasks based on mode
         query = company_name
         tasks = {}
-        if "website" in tools_to_run and website_url:
-            tasks["website"] = inspect_website(website_url, run_id=run_id)
-        elif "website" in tools_to_run:
-            tasks["website"] = inspect_website(f"https://{company_name.lower().replace(' ', '')}.com", run_id=run_id)
+        if "website" in tools_to_run:
+            tasks["website"] = fetch_website_evidence(query, website_url=website_url, run_id=run_id)
 
         if "youtube" in tools_to_run:
             tasks["youtube"] = search_youtube(query, max_results=5, run_id=run_id)

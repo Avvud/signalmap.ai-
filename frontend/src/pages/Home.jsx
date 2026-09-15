@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createResearchRun } from '../services/api';
-import { Sparkles, ArrowRight, ShieldCheck, Zap, Database, Cpu } from 'lucide-react';
+import { Sparkles, ArrowRight, ShieldCheck, Database, Cpu, Globe } from 'lucide-react';
 
 export default function Home() {
   const [companyName, setCompanyName] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
   const [mode, setMode] = useState('full');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -18,7 +19,7 @@ export default function Home() {
     setError(null);
 
     try {
-      const data = await createResearchRun(companyName.trim(), mode);
+      const data = await createResearchRun(companyName.trim(), mode, websiteUrl.trim() || null);
       navigate(`/status/${data.run_id}`);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to trigger research run. Make sure backend is running.');
@@ -65,6 +66,20 @@ export default function Home() {
           </div>
 
           <div className="form-group">
+            <label className="form-label">
+              <Globe size={13} style={{ marginRight: 4, display: 'inline' }} /> Website URL (Optional)
+            </label>
+            <input
+              type="url"
+              className="form-input"
+              placeholder="e.g. https://fastapi.tiangolo.com"
+              value={websiteUrl}
+              onChange={(e) => setWebsiteUrl(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+
+          <div className="form-group">
             <label className="form-label">Execution Mode</label>
             <select
               className="form-select"
@@ -87,17 +102,17 @@ export default function Home() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, marginTop: 40 }}>
-        <div style={{ textAlignment: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
           <ShieldCheck size={24} color="var(--accent-neon)" style={{ marginBottom: 8 }} />
           <h4 style={{ fontWeight: 700, fontSize: '0.95rem' }}>Strict Citations</h4>
           <p style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>Zero hallucination policy. Every claim links to evidence IDs.</p>
         </div>
-        <div style={{ textAlignment: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
           <Database size={24} color="var(--accent-secondary)" style={{ marginBottom: 8 }} />
           <h4 style={{ fontWeight: 700, fontSize: '0.95rem' }}>Multi-Source Fetch</h4>
           <p style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>Concurrent pipeline fetching across web, YouTube, Reddit & GitHub.</p>
         </div>
-        <div style={{ textAlignment: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
           <Cpu size={24} color="var(--accent-primary)" style={{ marginBottom: 8 }} />
           <h4 style={{ fontWeight: 700, fontSize: '0.95rem' }}>Groq AI Synthesis</h4>
           <p style={{ fontSize: '0.82rem', color: 'var(--text-dim)' }}>Two-stage synthesis extracting strengths, risks & sentiment.</p>

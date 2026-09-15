@@ -1,6 +1,6 @@
 import re
 from typing import List, Optional
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 import httpx
 from bs4 import BeautifulSoup
 from backend.models import WebsiteEvidence, SourceType
@@ -18,6 +18,38 @@ def _clean_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     return text.strip()
+
+
+async def search_web_duckduckgo(query: str, max_results: int = 3) -> List[str]:
+    """
+    Performs a live DuckDuckGo HTML search for a query and returns top target webpage URLs.
+    Does not require any API keys.
+    """
+    found_urls = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=8.0, follow_redirects=True, verify=False) as client:
+            resp = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all("a", class_="result__url", href=True):
+                    raw_url = a["href"]
+                    if "uddg=" in raw_url:
+                        target_url = unquote(raw_url.split("uddg=")[1].split("&")[0])
+                    else:
+                        target_url = raw_url
+
+                    if target_url.startswith("http") and target_url not in found_urls:
+                        found_urls.append(target_url)
+                        if len(found_urls) >= max_results:
+                            break
+    except Exception as e:
+        print(f"[WebsiteFetcher] DuckDuckGo search fallback notice: {e}")
+
+    return found_urls
 
 
 async def inspect_website(
@@ -141,3 +173,47 @@ async def inspect_website(
         normalized_content=normalized_content,
         metadata=metadata,
     )
+
+
+async def fetch_website_evidence(
+    query: str, website_url: Optional[str] = None, run_id: str = "web-run"
+) -> List[WebsiteEvidence]:
+    """
+    Intelligent website evidence fetcher:
+    1. If website_url is explicitly provided, inspects that URL.
+    2. Otherwise, performs live DuckDuckGo web search to find top relevant official website URLs.
+    3. Falls back to domain lookup if web search yields no results.
+    """
+    target_urls = []
+
+    if website_url:
+        target_urls.append(website_url)
+    else:
+        # Search DuckDuckGo for top real URLs
+        search_results = await search_web_duckduckgo(query, max_results=2)
+        if search_results:
+            target_urls.extend(search_results)
+        else:
+            # Fallback domain map
+            clean_q = query.lower().strip().replace(' ', '')
+            domain_map = {
+                "fastapi": "https://fastapi.tiangolo.com",
+                "nextjs": "https://nextjs.org",
+                "react": "https://react.dev",
+                "vue": "https://vuejs.org",
+                "pytorch": "https://pytorch.org",
+                "supabase": "https://supabase.com",
+                "vercel": "https://vercel.com",
+                "tailwind": "https://tailwindcss.com",
+                "moondream": "https://moondream.ai",
+                "moondreamvlm": "https://moondream.ai",
+            }
+            target_urls.append(domain_map.get(clean_q, f"https://{clean_q}.com"))
+
+    evidences = []
+    for idx, url in enumerate(target_urls):
+        ev_id = f"web-{idx+1:03d}"
+        ev = await inspect_website(url, run_id=run_id, evidence_id=ev_id)
+        evidences.append(ev)
+
+    return evidences
