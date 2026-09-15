@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     REDDIT_USER_AGENT: str = "SignalMapAI/1.0"
     GITHUB_TOKEN: str = ""
 
+    @property
+    def get_database_path(self) -> str:
+        """Returns /tmp/signalmap.db in Vercel / Lambda environment, otherwise DATABASE_PATH."""
+        if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            return "/tmp/signalmap.db"
+        return self.DATABASE_PATH
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
