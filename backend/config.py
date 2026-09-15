@@ -27,6 +27,11 @@ class Settings(BaseSettings):
             return "/tmp/signalmap.db"
         return self.DATABASE_PATH
 
+    @property
+    def is_vercel(self) -> bool:
+        """Returns True if running inside Vercel serverless functions."""
+        return bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

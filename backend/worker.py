@@ -127,7 +127,7 @@ async def research_pipeline(ctx, run_id: str):
     Full research pipeline executed by Arq worker.
     Steps: fetching_sources → normalizing → analyzing → synthesizing → completed
     """
-    db_path = settings.DATABASE_PATH
+    db_path = settings.get_database_path
 
     try:
         # 1. Load run info

@@ -19,6 +19,11 @@ from backend.database import init_db, get_db
 from backend.models import ResearchInput, RunStatusResponse, PipelineStatus
 from backend.worker import research_pipeline
 
+# In-memory caches for Vercel Serverless Functions
+RUNS_CACHE = {}
+REPORTS_CACHE = {}
+SOURCES_CACHE = {}
+
 # --- Structured Logging Setup ---
 class JSONLogFormatter(logging.Formatter):
     def format(self, record):
@@ -46,17 +51,21 @@ limiter = Limiter(key_func=get_remote_address)
 async def lifespan(app: FastAPI):
     logger.info("Initializing SignalMap AI FastAPI app")
     # Initialize DB
-    await init_db()
-    # Create Redis Pool for Arq
+    try:
+        await init_db()
+    except Exception as e:
+        logger.error(f"Failed to initialize SQLite DB: {e}")
+
+    # Create Redis Pool for Arq (if configured and available)
     try:
         app.state.redis = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
         logger.info(f"Connected to Redis at {settings.REDIS_URL}")
     except Exception as e:
-        logger.error(f"Could not connect to Redis at {settings.REDIS_URL}: {e}")
+        logger.warning(f"Redis unavailable ({e}). Fallback to direct async execution mode.")
         app.state.redis = None
     yield
     logger.info("Shutting down SignalMap AI FastAPI app")
-    if app.state.redis:
+    if getattr(app.state, "redis", None):
         await app.state.redis.close()
 
 
@@ -114,23 +123,43 @@ async def create_research(request: Request, body: ResearchInput, db: aiosqlite.C
     if redis_pool:
         await redis_pool.enqueue_job("research_pipeline", run_id)
         logger.info(f"Enqueued job for run {run_id} in Arq/Redis")
+    elif settings.is_vercel:
+        logger.info(f"Vercel Serverless environment detected: Executing research pipeline synchronously for run {run_id}")
+        await research_pipeline(None, run_id)
     else:
-        logger.warning(f"Redis pool unavailable. Launching research pipeline as asyncio background task for run {run_id}.")
+        logger.info(f"Launching research pipeline as background task for run {run_id}")
         asyncio.create_task(research_pipeline(None, run_id))
 
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         row = await cursor.fetchone()
-        return RunStatusResponse(
-            run_id=row["id"],
-            company_name=row["company_name"],
-            website_url=row["website_url"],
-            research_question=row["research_question"],
-            mode=row["mode"],
-            status=row["status"],
-            error_message=row["error_message"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        if row:
+            res = RunStatusResponse(
+                run_id=row["id"],
+                company_name=row["company_name"],
+                website_url=row["website_url"],
+                research_question=row["research_question"],
+                mode=row["mode"],
+                status=row["status"],
+                error_message=row["error_message"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            RUNS_CACHE[run_id] = res
+            return res
+
+    # In-memory fallback if row not retrieved from db
+    fallback_res = RunStatusResponse(
+        run_id=run_id,
+        company_name=body.company_name,
+        website_url=body.website_url,
+        research_question=body.research_question,
+        mode=body.mode,
+        status=PipelineStatus.COMPLETED if settings.is_vercel else PipelineStatus.QUEUED,
+        created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        updated_at=time.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    RUNS_CACHE[run_id] = fallback_res
+    return fallback_res
 
 
 @app.get("/api/research/{run_id}", response_model=RunStatusResponse)
@@ -138,20 +167,25 @@ async def create_research(request: Request, body: ResearchInput, db: aiosqlite.C
 async def get_research_status(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         row = await cursor.fetchone()
-        if not row:
-            logger.warning(f"Requested status for unknown run_id {run_id}")
-            raise HTTPException(status_code=404, detail="Research run not found")
-        return RunStatusResponse(
-            run_id=row["id"],
-            company_name=row["company_name"],
-            website_url=row["website_url"],
-            research_question=row["research_question"],
-            mode=row["mode"],
-            status=row["status"],
-            error_message=row["error_message"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        if row:
+            return RunStatusResponse(
+                run_id=row["id"],
+                company_name=row["company_name"],
+                website_url=row["website_url"],
+                research_question=row["research_question"],
+                mode=row["mode"],
+                status=row["status"],
+                error_message=row["error_message"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+
+    # Check cache fallback
+    if run_id in RUNS_CACHE:
+        return RUNS_CACHE[run_id]
+
+    logger.warning(f"Requested status for unknown run_id {run_id}")
+    raise HTTPException(status_code=404, detail="Research run not found")
 
 
 @app.get("/api/research/{run_id}/report")
@@ -159,17 +193,20 @@ async def get_research_status(request: Request, run_id: str, db: aiosqlite.Conne
 async def get_research_report(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         run = await cursor.fetchone()
-        if not run:
+        if not run and run_id in RUNS_CACHE:
+            run = {"status": RUNS_CACHE[run_id].status, "company_name": RUNS_CACHE[run_id].company_name}
+        elif not run:
             raise HTTPException(status_code=404, detail="Research run not found")
-            
-    if run["status"] != "completed":
-        raise HTTPException(status_code=400, detail=f"Report is not ready. Current status: {run['status']}")
 
     # Get the report
     async with db.execute("SELECT * FROM reports WHERE run_id = ?", (run_id,)) as cursor:
         report_row = await cursor.fetchone()
-        if not report_row:
-            raise HTTPException(status_code=404, detail="Report data not found for completed run")
+
+    if not report_row and run_id in REPORTS_CACHE:
+        return REPORTS_CACHE[run_id]
+
+    if not report_row:
+        raise HTTPException(status_code=404, detail="Report data not found for completed run")
 
     # Get the findings
     async with db.execute("SELECT * FROM findings WHERE run_id = ?", (run_id,)) as cursor:
@@ -186,7 +223,7 @@ async def get_research_report(request: Request, run_id: str, db: aiosqlite.Conne
                 "source_category": f["source_category"],
             })
 
-    return {
+    res = {
         "id": report_row["id"],
         "run_id": run_id,
         "company_name": run["company_name"],
@@ -198,16 +235,13 @@ async def get_research_report(request: Request, run_id: str, db: aiosqlite.Conne
         "limitations": json.loads(report_row["limitations_json"]),
         "created_at": report_row["created_at"]
     }
+    REPORTS_CACHE[run_id] = res
+    return res
 
 
 @app.get("/api/research/{run_id}/sources")
 @limiter.limit("30/minute")
 async def get_research_sources(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
-        run = await cursor.fetchone()
-        if not run:
-            raise HTTPException(status_code=404, detail="Research run not found")
-
     async with db.execute("SELECT * FROM evidence WHERE run_id = ?", (run_id,)) as cursor:
         rows = await cursor.fetchall()
         evidence_list = []
@@ -222,7 +256,15 @@ async def get_research_sources(request: Request, run_id: str, db: aiosqlite.Conn
                 "normalized_content": r["normalized_content"],
                 "metadata": json.loads(r["metadata_json"]) if r["metadata_json"] else {}
             })
+
+    if evidence_list:
+        SOURCES_CACHE[run_id] = evidence_list
         return {"run_id": run_id, "count": len(evidence_list), "evidence": evidence_list}
+
+    if run_id in SOURCES_CACHE:
+        return {"run_id": run_id, "count": len(SOURCES_CACHE[run_id]), "evidence": SOURCES_CACHE[run_id]}
+
+    return {"run_id": run_id, "count": 0, "evidence": []}
 
 
 @app.get("/health")
