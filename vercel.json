@@ -9,8 +9,8 @@
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/health", "destination": "/api/index" },
-    { "source": "/((?!api|health|assets).*)", "destination": "/index.html" }
+    { "source": "/api/:path*", "destination": "/api/index?__p=/api/:path*" },
+    { "source": "/health", "destination": "/api/index?__p=/health" },
+    { "source": "/((?!api/|health$).*)", "destination": "/index.html" }
   ]
 }
