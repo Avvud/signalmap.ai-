@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { getResearchReport, getResearchSources } from '../services/api';
 import EvidenceCard from '../components/EvidenceCard';
-import { ArrowLeft, ShieldCheck, Sparkles, Layers, TrendingUp, AlertTriangle, Download, Target, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, ShieldCheck, Sparkles, Layers, TrendingUp, AlertTriangle, Download, Target } from 'lucide-react';
 
 export default function Report() {
   const { runId } = useParams();
@@ -61,13 +61,11 @@ export default function Report() {
   }
 
   const {
-    company_name,
-    executive_summary,
+    company_name = 'Target Company',
+    executive_summary = 'No summary generated.',
     findings = [],
     cross_platform_findings = [],
     opportunity,
-    source_breakdown = [],
-    limitations = [],
     created_at
   } = report;
 
@@ -93,7 +91,7 @@ export default function Report() {
             </div>
             <h1 style={{ fontSize: '2.4rem', fontWeight: 800 }}>{company_name}</h1>
             <p style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
-              Run ID: {runId} • Generated: {new Date(created_at).toLocaleString()}
+              Run ID: {runId} • Generated: {created_at ? new Date(created_at).toLocaleString() : 'Just now'}
             </p>
           </div>
           <div style={{ background: 'var(--bg-input)', padding: '12px 18px', borderRadius: 10, textAlign: 'right' }}>
@@ -130,11 +128,11 @@ export default function Report() {
                     <span style={{ fontSize: '0.8rem', color: 'var(--accent-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>
                       {f.claim_type || 'Observation'} • Confidence: {((f.confidence || 0.9) * 100).toFixed(0)}%
                     </span>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>{f.source_category}</span>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>{f.source_category || 'general'}</span>
                   </div>
 
                   <p style={{ color: 'var(--text-main)', fontSize: '0.98rem', marginBottom: 10, lineHeight: 1.5 }}>
-                    {f.claim}
+                    {typeof f === 'string' ? f : (f.claim || 'Observation finding')}
                   </p>
 
                   <div>
@@ -160,15 +158,36 @@ export default function Report() {
             </div>
           )}
 
-          {/* Cross Platform Synthesis & Limitations */}
-          {cross_platform_findings.length > 0 && (
+          {/* Cross Platform Synthesis & Insights */}
+          {cross_platform_findings && cross_platform_findings.length > 0 && (
             <div className="glass-card">
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: 12 }}>Cross-Platform Insights</h3>
-              <ul style={{ paddingLeft: 20, color: 'var(--text-muted)', fontSize: '0.92rem' }}>
-                {cross_platform_findings.map((cpf, idx) => (
-                  <li key={idx} style={{ marginBottom: 6 }}>{cpf}</li>
-                ))}
-              </ul>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <TrendingUp size={18} color="var(--accent-secondary)" /> Cross-Platform Insights
+              </h3>
+              {cross_platform_findings.map((cpf, idx) => {
+                const claimText = typeof cpf === 'string' ? cpf : (cpf.claim || JSON.stringify(cpf));
+                const evidenceIds = typeof cpf === 'object' && cpf.evidence_ids ? cpf.evidence_ids : [];
+                const claimType = typeof cpf === 'object' && cpf.claim_type ? cpf.claim_type : 'cross_platform';
+
+                return (
+                  <div key={idx} className="finding-card" style={{ borderLeftColor: 'var(--accent-secondary)', marginBottom: 12 }}>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--accent-secondary)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>
+                      {claimType}
+                    </div>
+                    <p style={{ color: 'var(--text-main)', fontSize: '0.95rem', marginBottom: 6 }}>{claimText}</p>
+                    {evidenceIds.length > 0 && (
+                      <div>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-dim)', fontWeight: 600 }}>Citations: </span>
+                        {evidenceIds.map(id => (
+                          <span key={id} className="evidence-tag" onClick={() => highlightEvidence(id)}>
+                            [{id}]
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
