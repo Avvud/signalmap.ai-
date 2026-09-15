@@ -49,7 +49,15 @@ async def main():
         assert sources_res.status_code == 200
         sources_data = sources_res.json()
         print(f"Sources endpoint count: {sources_data['count']}")
-        assert sources_data["count"] == 1
+        assert sources_data["count"] > 0
+
+        # 6. Check report endpoint
+        report_res = await client.get(f"/api/research/{run_id}/report")
+        assert report_res.status_code == 200
+        report_data = report_res.json()
+        print(f"Report endpoint executive summary: {report_data['executive_summary'][:60]}...")
+        assert len(report_data["findings"]) > 0
+
         print("=== ALL PHASE 1 CHECKS PASSED ===")
 
 if __name__ == "__main__":

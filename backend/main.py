@@ -1,7 +1,10 @@
 import json
+import logging
 import uuid
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -14,21 +17,43 @@ from backend.config import settings
 from backend.database import init_db, get_db
 from backend.models import ResearchInput, RunStatusResponse, PipelineStatus
 
+# --- Structured Logging Setup ---
+class JSONLogFormatter(logging.Formatter):
+    def format(self, record):
+        log_obj = {
+            "time": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage()
+        }
+        if record.exc_info:
+            log_obj["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(log_obj)
+
+logger = logging.getLogger("signalmap")
+logger.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+handler = logging.StreamHandler()
+handler.setFormatter(JSONLogFormatter())
+logger.addHandler(handler)
+
 
 limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Initializing SignalMap AI FastAPI app")
     # Initialize DB
     await init_db()
     # Create Redis Pool for Arq
     try:
         app.state.redis = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        logger.info(f"Connected to Redis at {settings.REDIS_URL}")
     except Exception as e:
-        print(f"Warning: Could not connect to Redis at {settings.REDIS_URL}: {e}")
+        logger.error(f"Could not connect to Redis at {settings.REDIS_URL}: {e}")
         app.state.redis = None
     yield
+    logger.info("Shutting down SignalMap AI FastAPI app")
     if app.state.redis:
         await app.state.redis.close()
 
@@ -39,6 +64,16 @@ app.state.redis = None
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# --- Global Exception Handler ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Please try again later."},
+    )
+
+# --- Middleware ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,11 +82,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    logger.info(f"{request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s")
+    return response
+
+
+# --- Endpoints ---
 
 @app.post("/api/research", response_model=RunStatusResponse)
 @limiter.limit("10/minute")
 async def create_research(request: Request, body: ResearchInput, db: aiosqlite.Connection = Depends(get_db)):
     run_id = str(uuid.uuid4())
+    logger.info(f"Creating research run {run_id} for {body.company_name} (mode: {body.mode.value})")
     
     await db.execute(
         """
@@ -65,8 +111,9 @@ async def create_research(request: Request, body: ResearchInput, db: aiosqlite.C
     redis_pool = getattr(request.app.state, "redis", None)
     if redis_pool:
         await redis_pool.enqueue_job("research_pipeline", run_id)
+        logger.info(f"Enqueued job for run {run_id} in Arq/Redis")
     else:
-        print(f"Redis pool unavailable. Job {run_id} created in SQLite DB.")
+        logger.warning(f"Redis pool unavailable. Job {run_id} created in SQLite DB but not enqueued.")
 
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         row = await cursor.fetchone()
@@ -84,10 +131,12 @@ async def create_research(request: Request, body: ResearchInput, db: aiosqlite.C
 
 
 @app.get("/api/research/{run_id}", response_model=RunStatusResponse)
-async def get_research_status(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
+@limiter.limit("60/minute")
+async def get_research_status(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         row = await cursor.fetchone()
         if not row:
+            logger.warning(f"Requested status for unknown run_id {run_id}")
             raise HTTPException(status_code=404, detail="Research run not found")
         return RunStatusResponse(
             run_id=row["id"],
@@ -102,8 +151,55 @@ async def get_research_status(run_id: str, db: aiosqlite.Connection = Depends(ge
         )
 
 
+@app.get("/api/research/{run_id}/report")
+@limiter.limit("30/minute")
+async def get_research_report(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
+        run = await cursor.fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail="Research run not found")
+            
+    if run["status"] != "completed":
+        raise HTTPException(status_code=400, detail=f"Report is not ready. Current status: {run['status']}")
+
+    # Get the report
+    async with db.execute("SELECT * FROM reports WHERE run_id = ?", (run_id,)) as cursor:
+        report_row = await cursor.fetchone()
+        if not report_row:
+            raise HTTPException(status_code=404, detail="Report data not found for completed run")
+
+    # Get the findings
+    async with db.execute("SELECT * FROM findings WHERE run_id = ?", (run_id,)) as cursor:
+        finding_rows = await cursor.fetchall()
+        findings = []
+        for f in finding_rows:
+            findings.append({
+                "id": f["id"],
+                "run_id": f["run_id"],
+                "claim": f["claim"],
+                "claim_type": f["claim_type"],
+                "evidence_ids": json.loads(f["evidence_ids_json"]),
+                "confidence": f["confidence"],
+                "source_category": f["source_category"],
+            })
+
+    return {
+        "id": report_row["id"],
+        "run_id": run_id,
+        "company_name": run["company_name"],
+        "executive_summary": report_row["executive_summary"],
+        "findings": findings,
+        "cross_platform_findings": json.loads(report_row["cross_platform_findings"]) if report_row["cross_platform_findings"] else [],
+        "opportunity": report_row["opportunity"],
+        "source_breakdown": json.loads(report_row["source_breakdown_json"]),
+        "limitations": json.loads(report_row["limitations_json"]),
+        "created_at": report_row["created_at"]
+    }
+
+
 @app.get("/api/research/{run_id}/sources")
-async def get_research_sources(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
+@limiter.limit("30/minute")
+async def get_research_sources(request: Request, run_id: str, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)) as cursor:
         run = await cursor.fetchone()
         if not run:
