@@ -1,16 +1,25 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd frontend && npm install && npm run build",
-  "outputDirectory": "frontend/dist",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 300,
-      "memory": 2048
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
     }
-  },
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index?__p=/api/:path*" },
-    { "source": "/health", "destination": "/api/index?__p=/health" },
-    { "source": "/((?!api/|health$).*)", "destination": "/index.html" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/index.py?__p=/api/$1" },
+    { "src": "/health", "dest": "/api/index.py?__p=/health" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/frontend/$1" }
   ]
 }
